@@ -24,8 +24,8 @@ global_rounds = 100
 # num_nodes = 10
 local_steps = 10
 batch_size = 32
-optimizer = partial(optim.Adam, lr=0.001)
-# optimizer = partial(optim.SGD,lr=0.001)
+# optimizer = partial(optim.Adam, lr=0.001)
+optimizer = partial(optim.SGD,lr=0.005, momentum=0.9)
 # device = torch.device('cuda:2')
 # device = torch.device('cuda')  # Use GPU if available
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -59,7 +59,8 @@ def main(seeds, dataset_splited, model, model_name, K=None,n_assign=None,cost_me
     elif model_name == 'FedSoft':
         fedsoft.run(dataset_splited, batch_size, K, num_nodes, model, nn.CrossEntropyLoss, optimizer, global_rounds, local_steps, selection_size=5,num_classes=2,reg_lam=0.1,device = device)
     elif model_name == 'FedEM':
-        fedem.run(dataset_splited, batch_size, num_nodes, model, nn.CrossEntropyLoss, optimizer, global_rounds, local_steps, num_learners=K, device=device)
+        temperature = 1.0  # Default temperature for FedEM
+        fedem.run(dataset_splited, batch_size, num_nodes, model, nn.CrossEntropyLoss, optimizer, global_rounds, local_steps, num_learners=K, temperature=temperature, device=device)
 # dataset_splited,batch_size,K,num_nodes,model,objective,optimizer,local_steps,selection_size,\
 #         global_rounds,num_classes,estimation_interval=1,reg_lam = None,do_selection=True
 if __name__ == '__main__':

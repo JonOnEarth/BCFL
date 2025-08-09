@@ -20,11 +20,12 @@ from fedbase.utils.get_amazon_review import generate_AmazonReview
 from fedbase.utils.get_domainnet import generate_DomainNet
 
 os.chdir(os.path.dirname(os.path.abspath(__file__))) # set the current path as the working directory
-global_rounds = 100
+global_rounds = 200
 # num_nodes = 10
 local_steps = 10
 batch_size = 32
 optimizer = partial(optim.SGD,lr=0.005, momentum=0.9)
+# optimizer = partial(optim.Adam, lr=0.001)
 # optimizer = partial(optim.SGD,lr=0.001)
 # device = torch.device('cuda:2')
 # device = torch.device('cuda')  # Use GPU if available
@@ -57,7 +58,8 @@ def main(seeds, dataset_splited, model, model_name, K=None,n_assign=None,cost_me
     elif model_name == 'FedSoft':
         fedsoft.run(dataset_splited, batch_size, K, num_nodes, model, nn.CrossEntropyLoss, optimizer, global_rounds, local_steps, selection_size=15,num_classes=10,reg_lam=0.1,device = device)
     elif model_name == 'FedEM':
-        fedem.run(dataset_splited, batch_size, num_nodes, model, nn.CrossEntropyLoss, optimizer, global_rounds, local_steps, num_learners=K, device=device)
+        temperature = 1.0  # Default temperature for FedEM
+        fedem.run(dataset_splited, batch_size, num_nodes, model, nn.CrossEntropyLoss, optimizer, global_rounds, local_steps, num_learners=K, device=device, temperature=temperature)
 if __name__ == '__main__':
     dataset = 'cifar10' #'amazon' #'digit5'
     seeds = 1989 # 0,2020

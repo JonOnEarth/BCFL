@@ -259,7 +259,7 @@ class node():
             return self.importance_estimated
     
     # FedEM: Local training with multiple learners and EM algorithm
-    def fedem_local_training(self, local_steps, num_learners):
+    def fedem_local_training(self, local_steps, num_learners, temperature=1.0):
         """
         FedEM local training implementing the EM algorithm
         
@@ -269,22 +269,13 @@ class node():
         """
         import torch.nn.functional as F
         
-        if self.id == 0:
-            print(f"[Client {self.id}] Starting FedEM local training with {local_steps} steps, {num_learners} learners")
-            
         for step in range(local_steps):
-            if self.id == 0:
-                print(f"[Client {self.id}] Local step {step}")
-                
             for inputs, labels in self.train:
                 inputs = inputs.to(self.device)
                 labels = torch.flatten(labels).to(self.device, dtype=torch.long)
                 
-                if self.id == 0:
-                    print(f"  [Client {self.id}] Processing batch: {inputs.shape[0]} samples")
-                
                 # E-step: Compute assignment probabilities r_{i,j,m}
-                assignment_probs = self._compute_assignment_probabilities(inputs, labels, num_learners)
+                assignment_probs = self._compute_assignment_probabilities(inputs, labels, num_learners, temperature)
                 
                 # M-step: Update mixing coefficients and model parameters
                 self._update_mixing_coefficients(assignment_probs, num_learners)
@@ -292,7 +283,7 @@ class node():
                 
                 break  # Process one batch per step
     
-    def _compute_assignment_probabilities(self, inputs, labels, num_learners):
+    def _compute_assignment_probabilities(self, inputs, labels, num_learners, temperature=1.0):
         """
         E-step: Compute assignment probabilities r_{i,j,m}
         """
@@ -310,8 +301,9 @@ class node():
                 log_likelihood = -F.cross_entropy(outputs, labels, reduction='none')
                 log_probs[:, m] = torch.log(self.mixing_coeffs[m] + 1e-8) + log_likelihood
         
-        # Apply temperature scaling to prevent extreme assignment probabilities
-        temperature = 2.0  # Higher temperature = more balanced assignments
+        # Apply temperature scaling for assignment sharpness control
+        # temperature = 1.0: original sharp assignments
+        # temperature > 1.0: more balanced assignments
         log_probs = log_probs / temperature
         
         # Normalize using log-sum-exp trick for numerical stability
@@ -322,9 +314,6 @@ class node():
         if self.id == 0:
             if torch.isnan(assignment_probs).any():
                 print(f"    [Client {self.id}] DEBUG: NaN detected in assignment_probs")
-            # Debug assignment probabilities
-            print(f"    [Client {self.id}] DEBUG: Assignment probs mean: {assignment_probs.mean(dim=0)}")
-            print(f"    [Client {self.id}] DEBUG: Assignment probs range: [{assignment_probs.min():.6f}, {assignment_probs.max():.6f}]")
         
         return assignment_probs
     
@@ -339,9 +328,7 @@ class node():
         # Normalize to ensure sum equals 1
         self.mixing_coeffs = self.mixing_coeffs / (torch.sum(self.mixing_coeffs) + 1e-8)
         
-        if self.id == 0:
-            coeffs_str = [f'{c.item():.3f}' for c in self.mixing_coeffs]
-            print(f"    [Client {self.id}] DEBUG: Updated mixing_coeffs: [{', '.join(coeffs_str)}]")
+        # Removed debug output for cleaner logs
 
     def _update_learner_parameters(self, inputs, labels, assignment_probs, num_learners):
         """
@@ -361,12 +348,7 @@ class node():
             total_assignment_weight = torch.sum(assignment_probs[:, m]) + 1e-8
             weighted_loss = torch.sum(weighted_sample_losses) / total_assignment_weight
             
-            if self.id == 0:
-                raw_loss = torch.mean(sample_losses)
-                old_weighted_loss = torch.mean(assignment_probs[:, m] * sample_losses)
-                print(f"    [Client {self.id}] DEBUG: Learner {m}, Raw Loss: {raw_loss.item():.4f}")
-                print(f"    [Client {self.id}] DEBUG: Learner {m}, Old Weighted Loss: {old_weighted_loss.item():.4f}, New Weighted Loss: {weighted_loss.item():.4f}")
-                print(f"    [Client {self.id}] DEBUG: Learner {m}, Assignment weight sum: {total_assignment_weight.item():.3f}, mean: {assignment_probs[:, m].mean():.6f}")
+            # Removed debug output for cleaner logs
             
             if not torch.isnan(weighted_loss):
                 weighted_loss.backward()
@@ -376,9 +358,8 @@ class node():
         """
         FedEM local testing using ensemble of learners
         """
-        self.test_metrics = []
-        correct = 0
-        total = 0
+        predict_ts = torch.empty(0).to(self.device)
+        label_ts = torch.empty(0).to(self.device)
         
         # Set all learners to eval mode
         for m in range(num_learners):
@@ -389,23 +370,24 @@ class node():
                 inputs = inputs.to(self.device)
                 labels = torch.flatten(labels).to(self.device, dtype=torch.long)
                 
-                # Ensemble prediction: weighted average of all learners
+                # Ensemble prediction: weighted average of all learners (using raw logits)
                 ensemble_outputs = torch.zeros(inputs.size(0), self.learners[0](inputs).size(1), device=self.device)
                 
                 for m in range(num_learners):
                     outputs = self.learners[m](inputs)
-                    ensemble_outputs += self.mixing_coeffs[m] * F.softmax(outputs, dim=1)
+                    ensemble_outputs += self.mixing_coeffs[m] * outputs
                 
                 # Get predictions
                 _, predicted = torch.max(ensemble_outputs, 1)
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
+                predict_ts = torch.cat([predict_ts, predicted], 0)
+                label_ts = torch.cat([label_ts, labels], 0)
         
-        accuracy = correct / total
-        # For simplicity, using accuracy as both accuracy and F1 score
-        self.test_metrics.append([accuracy, accuracy])
+        # Calculate proper accuracy and F1 scores using sklearn
+        acc = accuracy_score(label_ts.cpu(), predict_ts.cpu())
+        macro_f1 = f1_score(label_ts.cpu(), predict_ts.cpu(), average='macro')
+        self.test_metrics.append([acc, macro_f1])
         
-        print(f'Accuracy, Macro F1 of Device {self.id} on the {total} test cases: {100 * accuracy:.2f} %, {100 * accuracy:.2f} %')
+        print(f'Accuracy, Macro F1 of Device {self.id} on the {len(label_ts)} test cases: {100 * acc:.2f} %, {100 * macro_f1:.2f} %')
 
     def local_train_acc(self, model):
         model.to(self.device)

@@ -5,9 +5,12 @@ import numpy as np
 from functools import partial
 import torch.nn as nn
 from torch.utils.data import DataLoader
+import os
+from fedbase.utils.data_loader import log
+from fedbase.utils.tools import add_
 
 def run(dataset_splited, batch_size, num_nodes, model, objective, optimizer, global_rounds, local_steps, 
-        num_learners=3, device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'), 
+        num_learners=3, temperature=1.0, device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'), 
         accuracy_type='single', path='log/', finetune=False, finetune_steps=None):
     """
     FedEM: Federated Multi-Task Learning under a Mixture of Distributions
@@ -22,6 +25,7 @@ def run(dataset_splited, batch_size, num_nodes, model, objective, optimizer, glo
         global_rounds: Number of global communication rounds
         local_steps: Number of local training steps per round
         num_learners: Number of learners (models) per client (M in the paper)
+        temperature: Temperature scaling for assignment probabilities (1.0=sharp, >1.0=balanced)
         device: Computing device
         accuracy_type: Type of accuracy computation
         path: Path for logging
@@ -140,7 +144,7 @@ def run(dataset_splited, batch_size, num_nodes, model, objective, optimizer, glo
             print(f'-------------------Local update {node_idx} start-------------------')
             
             # Perform FedEM local training
-            nodes[node_idx].fedem_local_training(local_steps, num_learners)
+            nodes[node_idx].fedem_local_training(local_steps, num_learners, temperature)
             
             print(f'-------------------Local update {node_idx} end-------------------')
         
@@ -159,9 +163,9 @@ def run(dataset_splited, batch_size, num_nodes, model, objective, optimizer, glo
             for i in range(num_nodes):
                 nodes[i].learners[learner_idx].load_state_dict(aggregated_state)
         
-        # Test accuracy for each node
+        # Test accuracy for each node using FedEM ensemble
         for j in range(num_nodes):
-            nodes[j].local_test()
+            nodes[j].fedem_local_test(num_learners)
         
         # Calculate and print global accuracy
         server.acc(nodes, weight_list)
@@ -172,7 +176,7 @@ def run(dataset_splited, batch_size, num_nodes, model, objective, optimizer, glo
             print(f'-------------------Finetune round {round_idx} start-------------------')
             
             for node_idx in range(num_nodes):
-                nodes[node_idx].fedem_local_training(local_steps, num_learners)
+                nodes[node_idx].fedem_local_training(local_steps, num_learners, temperature)
             
             # Aggregate and distribute
             for learner_idx in range(num_learners):
@@ -184,9 +188,18 @@ def run(dataset_splited, batch_size, num_nodes, model, objective, optimizer, glo
                     nodes[i].learners[learner_idx].load_state_dict(aggregated_state)
             
             for j in range(num_nodes):
-                nodes[j].local_test()
+                nodes[j].fedem_local_test(num_learners)
             
             server.acc(nodes, weight_list)
     
     print("FedEM Training Completed!")
+    
+    # Save results to log file
+    try:
+        train_splited, test_splited, split_para = dataset_splited
+        log(os.path.basename(__file__)[:-3] + add_(num_learners) + add_(temperature) + add_(split_para), nodes, server, path=path)
+        print(f"Results saved to log directory: {path}")
+    except Exception as e:
+        print(f"Warning: Could not save log file: {e}")
+    
     return nodes, server 
